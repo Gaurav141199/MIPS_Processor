@@ -1,0 +1,260 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.STD_LOGIC_UNSIGNED.ALL;
+use IEEE.STD_LOGIC_SIGNED.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity try is
+port(clock : in std_logic);
+end try;
+
+
+architecture Behavioral of try is
+
+-- Program Counter
+signal pc : integer := 0;
+
+-- Register file
+type register_type is array(0 to 31) of std_logic_vector(31	downto 0);
+signal register_file : register_type :=(others => "00000000000000000000000000000000");
+type stype is (first, memory_wait, run);
+signal state : stype := first;
+signal read : std_logic := '0';
+signal write : std_logic := '0';
+signal instruction: std_logic_vector(31 downto 0) := "00000000000000000000000000000000";
+signal ena : std_logic := '1';
+signal lw_check : std_logic := '0';
+signal sw_check : std_logic := '0';
+signal wea : STD_LOGIC_VECTOR(0 DOWNTO 0) := "0";
+signal address : STD_LOGIC_VECTOR(11 DOWNTO 0);
+signal din : STD_LOGIC_VECTOR(31 DOWNTO 0);
+signal dout : STD_LOGIC_VECTOR(31 DOWNTO 0);
+signal temp : std_logic := '0';
+signal cycle_count : integer := 0;
+signal saved_instruction : std_logic_vector(31 downto 0) := "00000000000000000000000000000000";
+signal stack_pointer : integer := 4095; 
+
+
+Component blk_mem_gen_0 IS
+  PORT (
+    clocka : IN STD_LOGIC;
+    ena : IN STD_LOGIC;
+    wea : IN STD_LOGIC_VECTOR(0 DOWNTO 0);
+    address : IN STD_LOGIC_VECTOR(11 DOWNTO 0);
+    din : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+    dout : OUT STD_LOGIC_VECTOR(31 DOWNTO 0)
+  );
+END component;
+
+
+begin
+
+    mem: blk_mem_gen_0   port map(clock,ena,wea,address,din,dout);
+                    
+    instruction <= dout;
+    
+	process(clock)
+
+	begin
+	
+	if rising_edge(clock) then
+
+	    if state = first then
+	       wea <= "0";
+	       address <= std_logic_vector(to_unsigned(pc,12));
+	       pc <= pc + 1;
+           state <= memory_wait;
+           cycle_count <= cycle_count + 1;
+	    
+	    
+        elsif state = memory_wait then						-- wait one cycle for block_memory to fetch the address in form of dout
+              cycle_count <= cycle_count + 1;
+              state <= run;
+              address <= std_logic_vector(to_unsigned(pc,12));
+              pc <= pc + 1;
+                  
+	    elsif state = run then
+                if unsigned(instruction(31 downto 0)) = "00000000000000000000000000000000" and lw_check = '0' and sw_check = '0' then 		-- end on NOOP instruction
+                	exit;
+                
+                elseif unsigned(instruction(31 downto 26)) = "000000" and lw_check = '0' and sw_check = '0' then	--takes 1 cycle on an average
+
+                	cycle_count <= cycle_count + 1;
+	                wea <= "0";
+	                address <= std_logic_vector(to_unsigned(pc,12));
+	                pc <= pc + 1;
+
+	                if unsigned(instruction(5 downto 0)) = "100000"  then 			-- check for addition 
+	                    
+	                    register_file(to_integer(unsigned(instruction(15 downto 11)))) <= std_logic_vector(signed(register_file(to_integer(unsigned(instruction(25 downto 21))))) + signed(register_file(to_integer(unsigned(instruction(20 downto 16))))));
+	                    
+	                elsif unsigned(instruction(5 downto 0)) = "100010" then 		-- check for subtraction
+	                    
+	                    register_file(to_integer(unsigned(instruction(15 downto 11)))) <= std_logic_vector(signed(register_file(to_integer(unsigned(instruction(25 downto 21))))) - signed(register_file(to_integer(unsigned(instruction(20 downto 16))))));
+	                    
+	                elsif unsigned(instruction(5 downto 0)) = "000010" then 		-- check for slr
+	                    
+	                    register_file(to_integer(unsigned(instruction(15 downto 11)))) <= std_logic_vector(shift_right(unsigned(register_file(to_integer(unsigned(instruction(20 downto 16))))), (to_integer(unsigned(instruction(10 downto 6))))));
+
+	                elsif unsigned(instruction(5 downto 0)) = "000000" then 		-- check for sll
+	                    
+	                    register_file(to_integer(unsigned(instruction(15 downto 11)))) <= std_logic_vector(shift_left(unsigned(register_file(to_integer(unsigned(instruction(20 downto 16))))), (to_integer(unsigned(instruction(10 downto 6))))));
+
+	                end if;
+
+                elsif (unsigned(instruction(31 downto 26)) = "100011" or lw_check = '1' ) and sw_check = '0'then 		-- check for lw    takes 3 cycles 
+
+                    cycle_count <= cycle_count + 1;
+
+                    if read = '0' and temp = '0' then
+                        saved_instruction <= instruction;
+                        address <= std_logic_vector(to_unsigned( to_integer(unsigned(register_file(to_integer(unsigned(instruction(25 downto 21)))))) + to_integer(signed(instruction(15 downto 0))),12));
+                        wea <= "0";
+                        read <= '1';
+                        lw_check <= '1';
+                        
+                    elsif read = '1' and temp = '0' then   
+                        temp <= '1';
+                        pc <= pc - 1;
+                        address <= std_logic_vector(to_unsigned(pc,12));
+                        pc <= pc + 1;
+
+                    else
+                        register_file(to_integer(unsigned(saved_instruction(20 downto 16)))) <= dout;
+                        read <= '0';
+                        lw_check <= '0';
+                        temp <= '0';
+                        saved_instruction <= "00000000000000000000000000000000";
+                        address <= std_logic_vector(to_unsigned(pc,12));
+                        pc <= pc + 1;	
+
+                    end if;
+
+                elsif (unsigned(instruction(31 downto 26))="101011" or sw_check='1')  and lw_check = '0'then 		-- check for sw
+                    cycle_count <= cycle_count + 1;    
+
+                    if write = '0' and temp='0' then
+                        wea <= "1"; 
+                        write <= '1';
+                        address <=  std_logic_vector(to_unsigned( to_integer(unsigned(register_file(to_integer(unsigned(instruction(25 downto 21))))))+to_integer(signed(instruction(15 downto 0))),12));
+                        din <= register_file(to_integer(unsigned(instruction(20 downto 16))));
+                        sw_check <= '1';
+
+                    elsif write = '1' and temp = '0' then 
+                        temp <= '1';
+                        wea <= '0';
+                        pc <= pc - 1;
+                        address <= std_logic_vector(to_unsigned(pc,12));
+                        pc <= pc + 1;
+
+                    else
+                        write <= '0';
+                        address <= std_logic_vector(to_unsigned(pc,12));
+                        pc <= pc+1;
+                        sw_check <= '0';
+                        temp <= '0';
+
+                    end if;
+                    
+                elsif unsigned(instruction(31 downto 26)) = "000100" and lw_check = '0' and sw_check = '0' then    --beq  it takes 1 cycle if condition isn't fulfilled else 2 cycles
+
+                    if unsigned(register_file(to_integer(unsigned(instruction(25 downto 21))))) = unsigned(register_file(to_integer(unsigned(instruction(20 downto 16))))) then
+                        wea <= "0";
+                        pc <= pc + (to_integer(unsigned(instruction(15 downto 0)))) - 2;
+                        address <= std_logic_vector(to_unsigned(pc+(to_integer(unsigned(instruction(15 downto 0)))),12));
+                        cycle_count <= cycle_count + 1;
+                        state <= memory_wait;
+
+                    else
+                        cycle_count <= cycle_count+1;
+                        address <= std_logic_vector(to_unsigned(pc,12));
+                        pc <= pc + 1;
+
+                    end if;
+                 
+                 elsif unsigned(instruction(31 downto 26))="000101" and lw_check = '0' and sw_check = '0' then   --bne
+                    if not(unsigned(register_file(to_integer(unsigned(instruction(25 downto 21))))) = unsigned(register_file(to_integer(unsigned(instruction(20 downto 16)))))) then
+                        wea <= "0";
+                        pc <= pc + (to_integer(unsigned(instruction(15 downto 0))));
+                        address <= std_logic_vector(to_unsigned(pc+(to_integer(unsigned(instruction(15 downto 0)))),12));
+                        cycle_count <= cycle_count + 1;
+                        pc <= pc + 1;
+                        state <= memory_wait;
+
+                    else
+                        cycle_count <= cycle_count+1;
+                        address <= std_logic_vector(to_unsigned(pc,12));
+                        pc <= pc + 1;
+
+                    end if;
+                    
+                  elsif unsigned(instruction(31 downto 26))="000110"  and lw_check = '0' and sw_check = '0' then   --blez
+                    if to_integer(signed(register_file(to_integer(unsigned(instruction(25 downto 21)))))) < 0  then
+                        wea <= "0";
+                        pc <= pc + (to_integer(unsigned(instruction(15 downto 0)))) - 2;
+                        address <= std_logic_vector(to_unsigned(pc+(to_integer(unsigned(instruction(15 downto 0)))),12));
+                        cycle_count <= cycle_count + 1;
+                        pc <= pc + 1;
+                        state <= memory_wait;
+
+                    else
+                        cycle_count <= cycle_count+1;
+                        address <= std_logic_vector(to_unsigned(pc,12));
+                        pc <= pc + 1;
+                    end if;
+                        
+                   elsif unsigned(instruction(31 downto 26)) = "000111" and lw_check = '0' and sw_check = '0' then   --bgtz
+                    if to_integer(signed(register_file(to_integer(unsigned(instruction(25 downto 21)))))) > 0  then
+                    	wea <= "0";
+                        pc <= pc + (to_integer(unsigned(instruction(15 downto 0)))) - 2;
+                        address <= std_logic_vector(to_unsigned(pc+(to_integer(unsigned(instruction(15 downto 0)))),12));
+                        cycle_count <= cycle_count + 1;
+                        pc <= pc + 1;
+                        state <= memory_wait;
+
+                    else
+                        cycle_count <= cycle_count + 1;
+                        address <= std_logic_vector(to_unsigned(pc, 12));
+                        pc <= pc + 1;
+
+                    end if;
+                    
+                    elsif unsigned(instruction(31 downto 26)) = "000010" and lw_check = '0' and sw_check = '0'  then   --j always takes two cycles to complete
+                        cycle_count <= cycle_count + 1;
+                        wea <= "0";
+                        address <= std_logic_vector(to_unsigned((to_integer(unsigned(instruction(25 downto 0)))),12));
+                        pc <= (to_integer(unsigned(instruction(25 downto 0)))) + 1; 
+                        state <= memory_wait;
+
+                    elsif (unsigned(instruction(31 downto 26)) = "000011" ) and lw_check = '0' and sw_check = '0' then   --j and locate, save pc in $ra
+	                        register_file(31) <= std_logic_vector(to_unsigned(pc,32));
+	                        cycle_count <= cycle_count + 1;
+	                        wea <= "0";
+	                        address <= std_logic_vector(to_unsigned((to_integer(unsigned(instruction(25 downto 0)))),12));
+	                        pc <= (to_integer(unsigned(instruction(25 downto 0)))) + 1; 
+	                        state <= memory_wait;
+	                   end if;
+
+                   if unsigned(instruction(31 downto 26))="000000" and unsigned(instruction(20 downto 6))="000000000000000" and unsigned(instruction(5 downto 0))="001000"  and lw_check ='0' and sw_check='0' then   --j register
+                            cycle_count <= cycle_count + 1;
+                            wea <= "0";
+                            address <= std_logic_vector(to_unsigned(to_integer(unsigned(register_file(to_integer(unsigned(instruction(25 downto 21)))))),12));
+                            pc <= to_integer(unsigned(register_file(to_integer(unsigned(instruction(25 downto 21))))))+1; 
+                            state <= memory_wait;
+                    end if;
+
+                end if;
+                
+         end if;
+       end if;
+               
+	end process;
+	
+	
+end Behavioral;
+
+
+
+
+
+
